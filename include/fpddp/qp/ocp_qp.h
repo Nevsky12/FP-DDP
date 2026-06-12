@@ -49,7 +49,9 @@ public:
 
         arg_mem_ = std::malloc(d_ocp_qp_ipm_arg_memsize(&dim_));
         d_ocp_qp_ipm_arg_create(&dim_, &arg_, arg_mem_);
-        d_ocp_qp_ipm_arg_set_default(SPEED, &arg_);
+        // acados defaults: hpipm_mode BALANCE, qp_solver_iter_max 50, ric_alg 1
+        d_ocp_qp_ipm_arg_set_default(BALANCE, &arg_);
+        int qp_iter_max = 50; d_ocp_qp_ipm_arg_set_iter_max(&qp_iter_max, &arg_);
         int ric = 1; d_ocp_qp_ipm_arg_set_ric_alg(&ric, &arg_);  // sqrt Riccati → ric getters
 
         ws_mem_ = std::malloc(d_ocp_qp_ipm_ws_memsize(&dim_, &arg_));
@@ -85,6 +87,8 @@ public:
     void getx(int i, double* v)  { d_ocp_qp_sol_get_x(i, &sol_, v); }
     void getu(int i, double* v)  { d_ocp_qp_sol_get_u(i, &sol_, v); }
     void getpi(int i, double* v) { d_ocp_qp_sol_get_pi(i, &sol_, v); }      // costate, length nx_{i+1}
+    void getlam_lbx0(double* v)  { d_ocp_qp_sol_get_lam_lbx(0, &sol_, v); } // x0 lower-bound multiplier
+    void getlam_ubx0(double* v)  { d_ocp_qp_sol_get_lam_ubx(0, &sol_, v); } // x0 upper-bound multiplier
     void getK(int i, double* v)  { d_ocp_qp_ipm_get_ric_K(&qp_, &arg_, &ws_, i, v); } // nu_i×nx_i col-major
     void getk(int i, double* v)  { d_ocp_qp_ipm_get_ric_k(&qp_, &arg_, &ws_, i, v); } // nu_i
     void getric_p(int i, double* v) { d_ocp_qp_ipm_get_ric_p(&qp_, &arg_, &ws_, i, v); } // nx_i (costate seed)

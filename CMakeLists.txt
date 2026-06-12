@@ -29,8 +29,16 @@ target_link_libraries(fpddp INTERFACE hpipm blasfeo m)   # link order: hpipm bef
 target_compile_options(fpddp INTERFACE -Wall -Wextra)
 
 enable_testing()
-foreach(t irk_demo sens_test model_smoke lqr_test ddp_test globalization_test cmp_pendulum cmp_cartpole cmp_unicycle)
+foreach(t irk_demo sens_test model_smoke lqr_test ddp_test globalization_test exact_hessian_test cmp_pendulum cmp_cartpole cmp_unicycle)
   add_executable(${t} test/${t}.cpp)
   target_link_libraries(${t} PRIVATE fpddp)
   add_test(NAME ${t} COMMAND ${t})
 endforeach()
+
+# acados stress-comparison driver (run per problem; see compare/stress_acados.py)
+add_executable(stress_fpddp test/stress_fpddp.cpp)
+target_link_libraries(stress_fpddp PRIVATE fpddp)
+
+# IRK performance/robustness bench (see compare/bench_irk_acados.py)
+add_executable(bench_irk test/bench_irk.cpp)
+target_link_libraries(bench_irk PRIVATE fpddp)

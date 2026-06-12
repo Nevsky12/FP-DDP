@@ -40,7 +40,7 @@ int main() {
     auto run = [&](const char* name, AnyGlobalization g) -> DdpSolution {
         Ddp solver(AnyDynamics(PendDyn{}), AnyCost(cost), N, nx, nu, tg);
         solver.globalization(std::move(g));
-        DdpOptions opt; opt.tol = 1e-6; opt.max_iter = 200;
+        DdpOptions opt; opt.tol_stat = 1e-6; opt.max_iter = 200; opt.adaptive_lm = true;
         auto s = solver.solve(x0, u0, opt);
         std::printf("  %-18s status=%d iters=%d cost=%.10e statio=%.1e\n", name, s.status, s.iters, s.cost, s.statio);
         return s;

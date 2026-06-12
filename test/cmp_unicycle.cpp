@@ -52,7 +52,7 @@ int main() {
 
     std::vector<std::vector<double>> u(N, std::vector<double>(nu, 0.0));
     std::vector<double> x0{1.0, 0.5, 0.8};   // offset pose -> regulate to origin
-    DdpOptions opt; opt.tol = 1e-7; opt.max_iter = 300;
+    DdpOptions opt; opt.tol_stat = 1e-6; opt.max_iter = 300; opt.adaptive_lm = true;  // = acados script settings
     auto s = solver.solve(x0, u, opt);
 
     std::printf("fp-ddp unicycle: status=%d iters=%d cost=%.10e statio=%.2e xN=[%.4f %.4f %.4f]\n",

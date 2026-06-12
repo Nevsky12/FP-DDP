@@ -96,3 +96,121 @@ regularizer/globalization policies, LOPT `Solution → nlp::WarmStart` adapter (
 - Effect: fp-ddp follows acados' algorithmic path (iteration counts align; comparisons still AGREE). The
   hard T=2 cart-pole that previously FAILED (status 3, statio 47.5) now stabilizes (statio 6e-3); residual
   slowness is the Gauss-Newton long-horizon limit (affects acados too — exact-Hessian is the follow-on).
+
+## 2026-06-12
+
+### acados-parity fix pass (line-by-line audit vs acados v0.5.4-10) — VERIFIED ✓
+Audit of `ocp_nlp_ddp.c` + `ocp_nlp_common.c` + globalization modules found one real bug and a set
+of mismatches vs the acados internals; all fixed:
+- **Funnel logic bug (fixed):** the h-type test was reachable when the switching condition held, and
+  with ht≡0 (feasible rollouts) it accepted *every* trial — the funnel degenerated to FixedStep, even
+  accepting cost-increasing steps. Now the h-type branch is an `else` of the switching condition
+  (acados structure), the switching condition compares against the predicted infeasibility reduction,
+  the width shrinks by the kappa rule `(1−κ)·ht + κ·w` inside the h-accept, and defaults align
+  (init_inc 15, ε 1e-6). Note: acados forbids DDP+funnel (SQP-only); the policy is kept for
+  feasible-path use where it reduces to the f-type Armijo.
+- **Predicted reduction:** now `pred_qp = −(optimal QP objective)` incl. the ½dᵀHd term with the
+  LM-regularized Hessian (acados `ocp_nlp_compute_qp_objective_value`); the funnel uses the
+  first-order `pred_lin = −gᵀd` (acados `predicted_optimality_reduction`). Was first-order only.
+- **Armijo formula:** exact acados DDP rule `ct−c0 ≤ min(−ε·α·max(pred,0)+1e-18, 0)`.
+- **Residuals & termination:** acados-style `res_stat` (Lagrange gradient over all (u,x) blocks with
+  the carried QP duals — full-step dual update) + `res_eq`; termination in `check_termination` order:
+  NaN → (eq ∧ stat) → zero-residual LS (`tol_zero_res`, default 0 = acados' effective value — the C
+  field is never initialized upstream) → small step (`step_norm < tol_eq`) → maxiter, with the
+  residual check also run *at* max_iter (acados `eval_residual_at_max_iter`, DDP default).
+- **Infeasible initial guess:** new `solve(x0, x_guess, u_guess, opt)` accepts an arbitrary primal
+  guess and takes acados' forced full feedback step at iteration 0 (the acados default init x≡x0,
+  u≡0 is exactly this case).
+- **Defaults aligned to the acados Python interface for DDP+merit:** ε_suff_descent 1e-6,
+  α_min 1e-17, α_reduction 0.7, max_iter 100, tol_stat/tol_eq 1e-6, LM off by default
+  (levenberg_marquardt 0.0), hpipm BALANCE mode + iter_max 50; per-stage `lm_scaling` option added
+  (acados multiplies the LM term by the cost `scaling`). QP MAXITER is tolerated (only hard QP
+  failures abort), matching acados. `FixedStep` gained `step_length` and accepts unconditionally.
+- Failed integration steps now NaN-fill the state (sim.h) so they surface via the NaN termination
+  instead of silently returning the unchanged state. `ctest` 9/9 after the pass.
+
+### Stress test vs acados — 10 problems, per-iteration parity — VERIFIED ✓
+`test/stress_fpddp.cpp` ≡ `compare/stress_acados.py` (same dynamics/weights/N/dt/x0, LINEAR_LS with
+dt in W and scaling=1, IRK GL3 ×1 with acados newton_tol 1e-12, DDP + merit + adaptive LM,
+tol 1e-6, acados-default infeasible init x≡x0, u≡0 on both sides); `compare/stress_compare.py`
+diffs status, iteration count, and the per-iteration cost/LM/res_stat sequences. Driver:
+`scripts/stress.sh`. Result — **9/10 strict AGREE, iterate-for-iterate**:
+
+| problem | iters fp = ac | iter-cost rel | LM seq | traj |
+|---|---|---|---|---|
+| pendulum | 7 = 7 | 3.0e-12 | exact | exact (10 dec) |
+| dintegrator (LQ) | 4 = 4 | 1.9e-13 | exact | exact |
+| vdp | 7 = 7 | 1.5e-13 | exact | exact |
+| unicycle | 6 = 6 | 2.2e-12 | exact | exact |
+| cartpole | 5 = 5 | 5.0e-12 | 2e-15 | 2.2e-09 |
+| cartpole_long (T=2) | 5 = 5 | 5.1e-11 | 2e-14 | 3.6e-09 |
+| quadrotor (6-state) | 7 = 7 | 2.2e-12 | exact | exact |
+| pendulum_hard | 9 = 9 | 3.0e-13 | exact | exact |
+| **vdp_hard (backtracks α=0.7)** | 17 = 17 | 1.7e-11 | 1e-12 | 1.0e-10 |
+| cartpole_swing (knife-edge) | 59 vs 11 | 2.5e-10 (shared 12 its) | 1e-11 | — informational |
+
+- The previously-stalling long-horizon cart-pole now converges in 5 iterations on both sides — the
+  acados-default x≡x0 init (forced-step path) conditions the unstable plant far better than the old
+  open-loop u=0 rollout init.
+- cartpole_swing: parity holds for 12 iterations *including three matched backtracking decisions*
+  (res_stat 4.6400208303 vs 4.6400208302 at the split point); beyond that, marginal accept/reject
+  flips amplify integrator-level differences (acados' 20-capped IRK Newton vs the vendored adaptive
+  IRK at violent trial states) and the paths legitimately separate — acados exits MINSTEP, fp-ddp
+  converges (status 0, 59 its). Algorithm parity is established by the shared prefix.
+
+### IRK bench vs acados sim_irk — performance & robustness — MEASURED ✓
+`test/bench_irk.cpp` ≡ `compare/bench_irk_acados.py`: 186 single GL3 (s=3) steps with forward
+sensitivities over mild→violent state grids (pendulum, cartpole, VdP μ=5), Newton tol 1e-12 both
+sides (ours ≤10 simplified-Newton iters, frozen J/step, scaled-norm + contraction forecast,
+*explicit failure*; acados ≤20 full-Newton iters, fresh J/iter, unscaled ‖ΔK‖∞, *no failure
+status*). Oracle: CVODES at 1e-13. Table: `logs/bench_irk_table.txt`.
+- **Speed** (median/step incl. sensitivities, both-converged cases): acados 3.0–4.0 µs vs ours
+  4.0–7.4 µs → acados 1.0–1.8× faster (blasfeo + codegen'd model, no per-call allocation; our
+  cartpole number also carries central-FD Jacobians).
+- **Accuracy**: identical max error vs CVODES wherever both converge (same discrete map; columns
+  equal to all printed digits) — differences are pure GL3 discretization error (1e-9 @ dt=0.05 →
+  1.5e-3 @ dt=0.5).
+- **Robustness**: ours flagged 75/186 (loud, NaN-fill → the DDP line search rejects cleanly); ~45
+  of those acados' stronger full Newton solved fine (our simplified Newton is over-conservative),
+  but on the ~30 cases beyond both, acados returned **silent garbage with status SUCCESS** — 38
+  silent failures total, including scaled errors of 0.1–0.21 (cartpole ω=40, dt=0.2) and **7
+  NaN-as-SUCCESS** returns (VdP dt=0.5); on vdp[13] ours converged properly where acados NaN'd.
+  This is the mechanism behind the cartpole_swing stress split.
+
+### IRK/Newton hardening + speed — beats acados sim_irk on both axes — VERIFIED ✓
+`include/fpddp/irk_stepper.h`: persistent stepper replacing the per-call irk driver.  The Butcher
+tableau is cached (it was 52% — 2.1 µs — of every old call), all workspace persists, the first
+substep warm-starts from the previous call, line-search rollouts skip the variational solves
+(`want_sens=false`), and the stage solve escalates:  simplified Newton (frozen J) → cold-predictor
+retry → **full Newton** (per-stage Jacobians refreshed each iteration — acados' scheme, but
+convergence-checked in the scaled norm) → substep halving → loud NaN failure.  The DDP loop holds
+one warm stepper per shooting interval.  Re-run of the 186-case bench (all Jacobians analytic,
+FD-validated at startup; same grids; `logs/bench_irk_table.txt`):
+
+| group | ours cold | ours warm | acados | speedup | fpFAIL | acados bad |
+|---|---|---|---|---|---|---|
+| pendulum .05/.2/.5 | 1.15/1.36/1.63 µs | ≈cold | 3.0/3.0/3.75 µs | 2.3–2.6× | 0 (was 0/0/12) | 0 |
+| cartpole .04/.2 | 3.73/4.69 µs | ≈cold | 4.0/5.0 µs | 1.07× | 0 (was 14/35) | 0 |
+| vdp .1/.5 | 1.72/1.73 µs | ≈cold | 4.0/5.0 µs | 2.3–2.9× | 0 (was 6/8) | **8 NaN-as-SUCCESS** |
+
+- **0/186 failures, 0 substep splits needed** (the full-Newton fallback recovered every previously
+  flagged case); every accepted step still verified to the 1e-12 scaled tolerance — zero silent.
+- Identical collocation roots to acados on all 178 cases where acados converges; on the 8 VdP
+  dt=0.5 cases acados returns NaN with status SUCCESS while ours converges properly.
+- `ctest` 10/10 and the 10-problem DDP stress parity vs acados unchanged after the rewiring.
+
+### Exact-Hessian DDP, automatically computed — VERIFIED ✓
+`HessianMode::exact_fd` (ddp.h): the QP Hessian gains the dynamics curvature Σ_k π_k ∂²Φ_k/∂(x,u)²,
+computed by central differences of the exact adjoint sensitivities g(z) = [A(z)ᵀπ; B(z)ᵀπ] — no
+user second derivatives; multipliers are the carried QP duals (empirically better-conditioned than
+bare adjoint costates).  Validated against a double-FD oracle of πᵀΦ(z): max diff 2.2e-7.  Key
+finding: the exact **stage-block** Hessian is legitimately indefinite even at the optimum (only the
+Riccati-reduced Hessian must be PSD) — projecting it costs the convergence rate (VdP: linear at
+ratio 0.63, 25 its).  It is therefore handed to hpipm **raw**; eigenvalue projection
+(`regularize.h`, mirror/project via Jacobi) runs only if the QP actually fails, and a hybrid
+GN→exact switch (`exact_switch_stat`, default 1e-1) keeps the far-from-solution phase on GN.
+Self-check (`test/exact_hessian_test.cpp`, ctest 10/10):
+- LQ: exact ≡ GN (1 = 1 iteration, same optimum to 1e-10).
+- hard pendulum (tol 1e-9): exact **3 its, statio 7.3e-13** vs GN 4 its, 1.1e-10 — quadratic tail.
+- stiff VdP μ=3 (tol 1e-7): exact **10 its, statio 3.8e-12** vs GN 16 its, 7.1e-08; the tail goes
+  2.0e-3 → 7.9e-4 → 2.6e-7 → 3.8e-12 (textbook quadratic).

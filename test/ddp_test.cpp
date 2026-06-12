@@ -46,7 +46,7 @@ int main() {
         Ddp solver(AnyDynamics(LinDyn{}), AnyCost(QuadCost{dt, 1,1, 0.1, 5,5}), N, nx, nu, tgrid(N,dt));
         std::vector<std::vector<double>> u(N, std::vector<double>(nu, 0.0));
         std::vector<double> x0{1.0, 0.0};
-        DdpOptions opt; opt.tol = 1e-8; opt.adaptive_lm = false; opt.lm_fixed = 1e-9;  // Newton-exact
+        DdpOptions opt; opt.tol_stat = 1e-8; opt.adaptive_lm = false; opt.lm_fixed = 1e-9;  // Newton-exact
         auto s = solver.solve(x0, u, opt);
         std::printf("  LQR: status=%d iters=%d cost=%.6e statio=%.2e\n", s.status, s.iters, s.cost, s.statio);
         check(s.status == 0, "LQR converged");
@@ -66,7 +66,7 @@ int main() {
         DdpOptions noop; noop.max_iter = 0;
         double cost0 = probe.solve(x0, u, noop).cost;
 
-        DdpOptions opt; opt.tol = 1e-6; opt.max_iter = 200; opt.verbose = true;
+        DdpOptions opt; opt.tol_stat = 1e-6; opt.max_iter = 200; opt.adaptive_lm = true; opt.verbose = true;
         auto s = solver.solve(x0, u, opt);
         std::printf("  PEND: status=%d iters=%d cost=%.6e -> from %.6e  xN=[%.4f %.4f]  statio=%.2e\n",
                     s.status, s.iters, s.cost, cost0, s.x[N][0], s.x[N][1], s.statio);
